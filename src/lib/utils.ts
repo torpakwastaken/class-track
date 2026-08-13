@@ -42,11 +42,13 @@ export function buildAttendanceMessage(
   className: string,
   dateISO: string,
   presentNames: string[],
-  absentNames: string[]
+  absentNames: string[],
+  lateNames: string[] = []
 ): string {
   const lines: string[] = [];
   lines.push(`📋 Yoklama - ${className} - ${formatDateTR(dateISO)}`);
   lines.push(`Var (${presentNames.length}): ${presentNames.join(", ") || "-"}`);
+  lines.push(`Geç (${lateNames.length}): ${lateNames.join(", ") || "-"}`);
   lines.push(`Yok (${absentNames.length}): ${absentNames.join(", ") || "-"}`);
   return lines.join("\n");
 }

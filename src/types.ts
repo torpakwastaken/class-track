@@ -9,7 +9,7 @@ export type SchoolClass = {
   students: Student[];
 };
 
-export type AttendanceStatus = "present" | "absent";
+export type AttendanceStatus = "present" | "absent" | "late";
 
 export type HomeworkStatus = "done" | "notdone";
 

@@ -24,15 +24,22 @@ export default function AttendanceTab({ selectedClass, addHistory }: Props) {
   const presentNames = students
     .filter((s) => (statuses[s.id] ?? "present") === "present")
     .map((s) => s.name);
+  const lateNames = students
+    .filter((s) => (statuses[s.id] ?? "present") === "late")
+    .map((s) => s.name);
   const absentNames = students
     .filter((s) => (statuses[s.id] ?? "present") === "absent")
     .map((s) => s.name);
 
   function toggle(id: string) {
-    setStatuses((prev) => ({
-      ...prev,
-      [id]: prev[id] === "absent" ? "present" : "absent",
-    }));
+    setStatuses((prev) => {
+      const current = prev[id] ?? "present";
+      let next: AttendanceStatus;
+      if (current === "present") next = "late";
+      else if (current === "late") next = "absent";
+      else next = "present";
+      return { ...prev, [id]: next };
+    });
   }
 
   function markAllPresent() {
@@ -43,9 +50,9 @@ export default function AttendanceTab({ selectedClass, addHistory }: Props) {
   const message = useMemo(
     () =>
       selectedClass
-        ? buildAttendanceMessage(selectedClass.name, today, presentNames, absentNames)
+        ? buildAttendanceMessage(selectedClass.name, today, presentNames, absentNames, lateNames)
         : "",
-    [selectedClass, today, presentNames, absentNames]
+    [selectedClass, today, presentNames, absentNames, lateNames]
   );
 
   function send() {
@@ -65,6 +72,17 @@ export default function AttendanceTab({ selectedClass, addHistory }: Props) {
 
   async function copy() {
     const ok = await copyToClipboard(message);
+    if (ok && selectedClass) {
+      addHistory({
+        id: uid(),
+        classId: selectedClass.id,
+        className: selectedClass.name,
+        date: today,
+        type: "yoklama",
+        content: message,
+        createdAt: Date.now(),
+      });
+    }
     showToast(ok ? "Panoya kopyalandı" : "Kopyalanamadı", ok ? "success" : "info");
   }
 
@@ -87,6 +105,7 @@ export default function AttendanceTab({ selectedClass, addHistory }: Props) {
           <p className="text-sm text-slate-400">{formatDateLongTR(today)}</p>
           <div className="mt-3 flex gap-2">
             <CountChip color="emerald" label="Var" count={presentNames.length} />
+            <CountChip color="amber" label="Geç" count={lateNames.length} />
             <CountChip color="rose" label="Yok" count={absentNames.length} />
           </div>
         </div>
@@ -104,20 +123,29 @@ export default function AttendanceTab({ selectedClass, addHistory }: Props) {
 
       <div className="px-4 mt-4 space-y-2.5">
         {students.map((s, i) => {
-          const present = (statuses[s.id] ?? "present") === "present";
+          const status = statuses[s.id] ?? "present";
+          const isPresent = status === "present";
+          const isLate = status === "late";
+          const isAbsent = status === "absent";
           return (
             <button
               key={s.id}
               onClick={() => toggle(s.id)}
               className={`w-full flex items-center gap-3 p-3.5 rounded-2xl border-2 transition active:scale-[0.98] ${
-                present
+                isPresent
                   ? "bg-emerald-50 border-emerald-500"
+                  : isLate
+                  ? "bg-amber-50 border-amber-500"
                   : "bg-rose-50 border-rose-400"
               }`}
             >
               <span
                 className={`w-8 h-8 grid place-items-center rounded-full text-sm font-bold ${
-                  present ? "bg-emerald-500 text-white" : "bg-rose-500 text-white"
+                  isPresent
+                    ? "bg-emerald-500 text-white"
+                    : isLate
+                    ? "bg-amber-500 text-white"
+                    : "bg-rose-500 text-white"
                 }`}
               >
                 {i + 1}
@@ -127,13 +155,29 @@ export default function AttendanceTab({ selectedClass, addHistory }: Props) {
               </span>
               <span
                 className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-bold ${
-                  present
+                  isPresent
                     ? "bg-emerald-500 text-white"
+                    : isLate
+                    ? "bg-amber-500 text-white"
                     : "bg-rose-500 text-white"
                 }`}
               >
-                {present ? <UserCheck size={18} /> : <UserX size={18} />}
-                {present ? "Var" : "Yok"}
+                {isPresent ? (
+                  <>
+                    <UserCheck size={18} />
+                    Var
+                  </>
+                ) : isLate ? (
+                  <>
+                    <span className="text-lg">⏱️</span>
+                    Geç
+                  </>
+                ) : (
+                  <>
+                    <UserX size={18} />
+                    Yok
+                  </>
+                )}
               </span>
             </button>
           );
@@ -173,13 +217,15 @@ function CountChip({
   label,
   count,
 }: {
-  color: "emerald" | "rose";
+  color: "emerald" | "amber" | "rose";
   label: string;
   count: number;
 }) {
   const styles =
     color === "emerald"
       ? "bg-emerald-50 text-emerald-700"
+      : color === "amber"
+      ? "bg-amber-50 text-amber-700"
       : "bg-rose-50 text-rose-700";
   return (
     <span className={`px-3 py-1.5 rounded-lg text-sm font-semibold ${styles}`}>
