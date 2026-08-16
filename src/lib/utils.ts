@@ -57,21 +57,30 @@ export function buildHomeworkCheckMessage(
   className: string,
   dateISO: string,
   doneNames: string[],
-  notDoneNames: string[]
+  notDoneNames: string[],
+  incompleteNames: string[] = []
 ): string {
   const lines: string[] = [];
   lines.push(`✅ Ödev Kontrolü - ${className} - ${formatDateTR(dateISO)}`);
   lines.push(`Yaptı (${doneNames.length}): ${doneNames.join(", ") || "-"}`);
   lines.push(`Yapmadı (${notDoneNames.length}): ${notDoneNames.join(", ") || "-"}`);
+  lines.push(`Eksik (${incompleteNames.length}): ${incompleteNames.join(", ") || "-"}`);
   return lines.join("\n");
 }
 
 export function buildNewHomeworkMessage(
   className: string,
   dateISO: string,
-  homeworkText: string
+  title: string,
+  description: string,
+  dueDateISO?: string
 ): string {
-  return `📚 Yeni Ödev - ${className} - ${formatDateTR(dateISO)}\n${homeworkText.trim()}`;
+  const lines: string[] = [];
+  lines.push(`📚 Yeni Ödev - ${className} - ${formatDateTR(dateISO)}`);
+  if (title.trim()) lines.push(`📌 ${title.trim()}`);
+  if (dueDateISO) lines.push(`🗓️ Teslim: ${formatDateTR(dueDateISO)}`);
+  lines.push(description.trim());
+  return lines.join("\n");
 }
 
 export function whatsappUrl(text: string): string {

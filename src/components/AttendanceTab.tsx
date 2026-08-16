@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { CheckCheck, ClipboardCopy, Send, UserCheck, UserX } from "lucide-react";
+import { CheckCheck, ClipboardCopy, Database, Send, UserCheck, UserX } from "lucide-react";
 import type { AttendanceStatus, HistoryRecord, SchoolClass } from "@/types";
 import {
   buildAttendanceMessage,
@@ -10,6 +10,8 @@ import {
   whatsappUrl,
 } from "@/lib/utils";
 import { showToast } from "@/components/Toast";
+import { addAttendanceRecord, createNotification } from "@/lib/firestore";
+import { useAuth } from "@/context/AuthContext";
 
 type Props = {
   selectedClass: SchoolClass | null;
@@ -17,6 +19,7 @@ type Props = {
 };
 
 export default function AttendanceTab({ selectedClass, addHistory }: Props) {
+  const { user } = useAuth();
   const today = todayISO();
   const [statuses, setStatuses] = useState<Record<string, AttendanceStatus>>({});
 
@@ -55,24 +58,56 @@ export default function AttendanceTab({ selectedClass, addHistory }: Props) {
     [selectedClass, today, presentNames, absentNames, lateNames]
   );
 
-  function send() {
-    if (!selectedClass || students.length === 0) return;
-    addHistory({
-      id: uid(),
-      classId: selectedClass.id,
-      className: selectedClass.name,
-      date: today,
-      type: "yoklama",
-      content: message,
-      createdAt: Date.now(),
+  async function persistAttendance() {
+    if (!selectedClass || !user) return;
+
+    const records = students.map((s) => {
+      const status = statuses[s.id] ?? "present";
+      return {
+        classId: selectedClass.id,
+        className: selectedClass.name,
+        date: today,
+        studentId: s.id,
+        studentName: s.name,
+        status,
+        teacherUid: user.uid,
+      };
     });
-    window.open(whatsappUrl(message), "_blank");
-    showToast("WhatsApp açılıyor…");
+
+    // Save each record to Firestore
+    for (const rec of records) {
+      await addAttendanceRecord(rec);
+    }
+
+    // Auto-notify parents of absent/late students
+    for (const rec of records) {
+      if (rec.status === "absent" || rec.status === "late") {
+        // Find the student to get their parentUid
+        const student = students.find((s) => s.id === rec.studentId);
+        if (student?.parentUid) {
+          await createNotification({
+            parentUid: student.parentUid,
+            studentId: rec.studentId,
+            studentName: rec.studentName,
+            className: rec.className,
+            date: rec.date,
+            type: rec.status,
+            message:
+              rec.status === "absent"
+                ? `${rec.studentName} bugün (${formatDateLongTR(rec.date)}) ${rec.className} dersinde YOK olarak işaretlendi.`
+                : `${rec.studentName} bugün (${formatDateLongTR(rec.date)}) ${rec.className} dersine GEÇ kaldı.`,
+          });
+        }
+      }
+    }
   }
 
-  async function copy() {
-    const ok = await copyToClipboard(message);
-    if (ok && selectedClass) {
+  // Yoklamayı veritabanına kaydeder (bildirimleri de oluşturur).
+  // WhatsApp / panoya kopyalama butonlarından bağımsız olarak kullanılabilir.
+  async function saveOnly() {
+    if (!selectedClass || students.length === 0) return;
+    try {
+      await persistAttendance();
       addHistory({
         id: uid(),
         classId: selectedClass.id,
@@ -82,6 +117,51 @@ export default function AttendanceTab({ selectedClass, addHistory }: Props) {
         content: message,
         createdAt: Date.now(),
       });
+      showToast("Yoklama veritabanına kaydedildi ✅", "success");
+    } catch (err) {
+      console.error("Yoklama kaydedilemedi:", err);
+      showToast("Yoklama kaydedilemedi", "error");
+    }
+  }
+
+  async function send() {
+    if (!selectedClass || students.length === 0) return;
+    try {
+      await persistAttendance();
+      addHistory({
+        id: uid(),
+        classId: selectedClass.id,
+        className: selectedClass.name,
+        date: today,
+        type: "yoklama",
+        content: message,
+        createdAt: Date.now(),
+      });
+      window.open(whatsappUrl(message), "_blank");
+      showToast("Yoklama kaydedildi, WhatsApp açılıyor…");
+    } catch (err) {
+      console.error("Yoklama kaydedilemedi:", err);
+      showToast("Yoklama kaydedilemedi", "error");
+    }
+  }
+
+  async function copy() {
+    const ok = await copyToClipboard(message);
+    if (ok && selectedClass) {
+      try {
+        await persistAttendance();
+        addHistory({
+          id: uid(),
+          classId: selectedClass.id,
+          className: selectedClass.name,
+          date: today,
+          type: "yoklama",
+          content: message,
+          createdAt: Date.now(),
+        });
+      } catch (err) {
+        console.error("Yoklama kaydedilemedi:", err);
+      }
     }
     showToast(ok ? "Panoya kopyalandı" : "Kopyalanamadı", ok ? "success" : "info");
   }
@@ -126,7 +206,6 @@ export default function AttendanceTab({ selectedClass, addHistory }: Props) {
           const status = statuses[s.id] ?? "present";
           const isPresent = status === "present";
           const isLate = status === "late";
-          const isAbsent = status === "absent";
           return (
             <button
               key={s.id}
@@ -186,18 +265,25 @@ export default function AttendanceTab({ selectedClass, addHistory }: Props) {
 
       <ActionBar>
         <button
+          onClick={saveOnly}
+          className="flex-1 flex items-center justify-center gap-2 py-4 rounded-2xl bg-emerald-600 text-white font-bold active:scale-[0.98] transition"
+        >
+          <Database size={18} />
+          Kaydet
+        </button>
+        <button
           onClick={copy}
           className="flex-1 flex items-center justify-center gap-2 py-4 rounded-2xl bg-slate-100 text-slate-700 font-bold active:scale-[0.98] transition"
         >
-          <ClipboardCopy size={20} />
-          Panoya Kopyala
+          <ClipboardCopy size={18} />
+          Kopyala
         </button>
         <button
           onClick={send}
-          className="flex-[1.6] flex items-center justify-center gap-2 py-4 rounded-2xl bg-[#25D366] text-white font-bold shadow-md active:scale-[0.98] transition"
+          className="flex-[1.4] flex items-center justify-center gap-2 py-4 rounded-2xl bg-[#25D366] text-white font-bold shadow-md active:scale-[0.98] transition"
         >
-          <Send size={20} />
-          WhatsApp'a Gönder
+          <Send size={18} />
+          WhatsApp
         </button>
       </ActionBar>
     </div>

@@ -1,24 +1,31 @@
 import { useState } from "react";
 import { ChevronLeft, Pencil, Plus, Trash2, Users } from "lucide-react";
 import type { SchoolClass, Student } from "@/types";
-import { uid } from "@/lib/utils";
 import Modal from "@/components/Modal";
 import { showToast } from "@/components/Toast";
 
 type Props = {
   classes: SchoolClass[];
-  setClasses: (updater: (prev: SchoolClass[]) => SchoolClass[]) => void;
   selectedClassId: string | null;
   onSelectClass: (id: string) => void;
   onBack: () => void;
+  onSaveClass: (name: string, classId?: string) => Promise<void>;
+  onDeleteClass: (id: string) => Promise<void>;
+  onAddStudent: (classId: string, name: string) => Promise<void>;
+  onEditStudent: (classId: string, studentId: string, name: string) => Promise<void>;
+  onDeleteStudent: (classId: string, studentId: string) => Promise<void>;
 };
 
 export default function ClassManager({
   classes,
-  setClasses,
   selectedClassId,
   onSelectClass,
   onBack,
+  onSaveClass,
+  onDeleteClass,
+  onAddStudent,
+  onEditStudent,
+  onDeleteStudent,
 }: Props) {
   const [openClassModal, setOpenClassModal] = useState(false);
   const [editingClass, setEditingClass] = useState<SchoolClass | null>(null);
@@ -37,35 +44,31 @@ export default function ClassManager({
     setOpenClassModal(true);
   }
 
-  function openEditClass(c: SchoolClass) {
-    setEditingClass(c);
-    setClassName(c.name);
-    setOpenClassModal(true);
-  }
-
-  function saveClass() {
+  async function saveClass() {
     const name = className.trim();
     if (!name) return;
-    if (editingClass) {
-      setClasses((prev) =>
-        prev.map((c) => (c.id === editingClass.id ? { ...c, name } : c))
-      );
-      showToast("Sınıf güncellendi");
-    } else {
-      const c: SchoolClass = { id: uid(), name, students: [] };
-      setClasses((prev) => [...prev, c]);
-      showToast("Sınıf oluşturuldu");
+    try {
+      await onSaveClass(name, editingClass?.id);
+      showToast(editingClass ? "Sınıf güncellendi" : "Sınıf oluşturuldu");
+      setOpenClassModal(false);
+    } catch (err) {
+      console.error(err);
+      showToast("Sınıf kaydedilemedi", "error");
     }
-    setOpenClassModal(false);
   }
 
-  function deleteClass(id: string) {
+  async function deleteClass(id: string) {
     const c = classes.find((x) => x.id === id);
     if (!c) return;
     if (!confirm(`"${c.name}" sınıfını ve tüm öğrencilerini silmek istiyor musunuz?`)) return;
-    setClasses((prev) => prev.filter((x) => x.id !== id));
-    if (selectedClassId === id) onSelectClass("");
-    showToast("Sınıf silindi", "info");
+    try {
+      await onDeleteClass(id);
+      if (selectedClassId === id) onSelectClass("");
+      showToast("Sınıf silindi", "info");
+    } catch (err) {
+      console.error(err);
+      showToast("Sınıf silinemedi", "error");
+    }
   }
 
   function openStudents(c: SchoolClass) {
@@ -73,16 +76,16 @@ export default function ClassManager({
     setOpenStudentModal(true);
   }
 
-  function addStudent() {
+  async function addStudent() {
     const name = studentName.trim();
     if (!name || !activeClassId) return;
-    const s: Student = { id: uid(), name };
-    setClasses((prev) =>
-      prev.map((c) =>
-        c.id === activeClassId ? { ...c, students: [...c.students, s] } : c
-      )
-    );
-    setStudentName("");
+    try {
+      await onAddStudent(activeClassId, name);
+      setStudentName("");
+    } catch (err) {
+      console.error(err);
+      showToast("Öğrenci eklenemedi", "error");
+    }
   }
 
   function startEditStudent(s: Student) {
@@ -90,34 +93,27 @@ export default function ClassManager({
     setStudentName(s.name);
   }
 
-  function saveEditStudent() {
+  async function saveEditStudent() {
     const name = studentName.trim();
     if (!name || !activeClassId || !editingStudent) return;
-    setClasses((prev) =>
-      prev.map((c) =>
-        c.id === activeClassId
-          ? {
-              ...c,
-              students: c.students.map((s) =>
-                s.id === editingStudent.id ? { ...s, name } : s
-              ),
-            }
-          : c
-      )
-    );
-    setEditingStudent(null);
-    setStudentName("");
+    try {
+      await onEditStudent(activeClassId, editingStudent.id, name);
+      setEditingStudent(null);
+      setStudentName("");
+    } catch (err) {
+      console.error(err);
+      showToast("Öğrenci güncellenemedi", "error");
+    }
   }
 
-  function deleteStudent(id: string) {
+  async function deleteStudent(id: string) {
     if (!activeClassId) return;
-    setClasses((prev) =>
-      prev.map((c) =>
-        c.id === activeClassId
-          ? { ...c, students: c.students.filter((s) => s.id !== id) }
-          : c
-      )
-    );
+    try {
+      await onDeleteStudent(activeClassId, id);
+    } catch (err) {
+      console.error(err);
+      showToast("Öğrenci silinemedi", "error");
+    }
   }
 
   return (
@@ -227,11 +223,15 @@ export default function ClassManager({
         <div className="flex gap-2 mb-4">
           <input
             value={studentName}
-            onChange={(e) =>
-              editingStudent ? setStudentName(e.target.value) : setStudentName(e.target.value)
-            }
+            onChange={(e) => setStudentName(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") editingStudent ? saveEditStudent() : addStudent();
+              if (e.key === "Enter") {
+                if (editingStudent) {
+                  saveEditStudent();
+                } else {
+                  addStudent();
+                }
+              }
             }}
             placeholder={editingStudent ? "İsmi düzenle" : "Öğrenci adı soyadı"}
             autoFocus
@@ -268,7 +268,10 @@ export default function ClassManager({
               <span className="w-7 h-7 grid place-items-center rounded-full bg-slate-200 text-slate-500 text-xs font-bold">
                 {i + 1}
               </span>
-              <span className="flex-1 text-slate-700 font-medium">{s.name}</span>
+              <span className="flex-1 text-slate-700 font-medium truncate">
+                {s.name}
+                {s.parentUid && <span className="ml-2 text-xs text-purple-600">🔗 Veli bağlı</span>}
+              </span>
               <button
                 onClick={() => startEditStudent(s)}
                 className="w-9 h-9 grid place-items-center text-slate-400 hover:text-emerald-600 transition"

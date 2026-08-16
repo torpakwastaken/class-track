@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ClipboardCopy, Send } from "lucide-react";
+import { ClipboardCopy, Database, Send } from "lucide-react";
 import type { HistoryRecord, SchoolClass } from "@/types";
 import {
   buildNewHomeworkMessage,
@@ -11,6 +11,8 @@ import {
 } from "@/lib/utils";
 import { showToast } from "@/components/Toast";
 import { ActionBar } from "@/components/AttendanceTab";
+import { persistHomework } from "@/lib/firestore";
+import { useAuth } from "@/context/AuthContext";
 
 type Props = {
   selectedClass: SchoolClass | null;
@@ -18,17 +20,32 @@ type Props = {
 };
 
 export default function NewHomeworkTab({ selectedClass, addHistory }: Props) {
+  const { user } = useAuth();
   const today = todayISO();
-  const [text, setText] = useState("");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [dueDate, setDueDate] = useState(today);
 
   const message = useMemo(
     () =>
-      selectedClass ? buildNewHomeworkMessage(selectedClass.name, today, text) : "",
-    [selectedClass, today, text]
+      selectedClass
+        ? buildNewHomeworkMessage(selectedClass.name, today, title, description, dueDate)
+        : "",
+    [selectedClass, today, title, description, dueDate]
   );
 
-  function send() {
-    if (!selectedClass || !text.trim()) return;
+  // Ödevi Firestore'daki `homework` koleksiyonuna kalıcı olarak yazar.
+  async function persist() {
+    if (!selectedClass || !user) return;
+    await persistHomework({
+      classId: selectedClass.id,
+      className: selectedClass.name,
+      title: title.trim(),
+      description: description.trim(),
+      date: today,
+      dueDate,
+      teacherUid: user.uid,
+    });
     addHistory({
       id: uid(),
       classId: selectedClass.id,
@@ -38,13 +55,45 @@ export default function NewHomeworkTab({ selectedClass, addHistory }: Props) {
       content: message,
       createdAt: Date.now(),
     });
-    window.open(whatsappUrl(message), "_blank");
-    showToast("WhatsApp açılıyor…");
+  }
+
+  // Ödevi yalnızca veritabanına kaydeder (WhatsApp / panoya kopyalamadan bağımsız).
+  async function saveOnly() {
+    if (!selectedClass || !title.trim() || !description.trim()) return;
+    try {
+      await persist();
+      showToast("Ödev veritabanına kaydedildi ✅", "success");
+    } catch (err) {
+      console.error("Ödev kaydedilemedi:", err);
+      showToast("Ödev kaydedilemedi", "error");
+    }
+  }
+
+  async function send() {
+    if (!selectedClass || !title.trim() || !description.trim()) return;
+    try {
+      await persist();
+      window.open(whatsappUrl(message), "_blank");
+      showToast("Ödev kaydedildi, WhatsApp açılıyor…");
+    } catch (err) {
+      console.error("Ödev kaydedilemedi:", err);
+      showToast("Ödev kaydedilemedi", "error");
+    }
   }
 
   async function copy() {
+    if (!selectedClass || !title.trim() || !description.trim()) return;
     const ok = await copyToClipboard(message);
-    showToast(ok ? "Panoya kopyalandı" : "Kopyalanamadı", ok ? "success" : "info");
+    if (ok) {
+      try {
+        await persist();
+      } catch (err) {
+        console.error("Ödev kaydedilemedi:", err);
+        showToast("Ödev kaydedilemedi", "error");
+        return;
+      }
+    }
+    showToast(ok ? "Panoya kopyalandı ve ödev kaydedildi" : "Kopyalanamadı", ok ? "success" : "info");
   }
 
   if (!selectedClass) {
@@ -63,24 +112,58 @@ export default function NewHomeworkTab({ selectedClass, addHistory }: Props) {
         </div>
       </div>
 
-      <div className="px-4 mt-4">
-        <label className="block text-sm font-medium text-slate-600 mb-1.5">
-          Ödev Metni
-        </label>
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="örn. Sayfa 42-43, alıştırma 1-5 arası. Çarşamba gününe kadar."
-          rows={8}
-          autoFocus
-          className="w-full px-4 py-3.5 rounded-2xl border border-slate-200 focus:border-violet-500 focus:ring-2 focus:ring-violet-100 outline-none text-slate-800 text-base leading-relaxed resize-none"
-        />
+      <div className="px-4 mt-4 space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-slate-600 mb-1.5">
+            Ödev Başlığı
+          </label>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="örn. Matematik Alıştırmaları"
+            className="w-full px-4 py-3 rounded-2xl border border-slate-200 focus:border-violet-500 focus:ring-2 focus:ring-violet-100 outline-none text-slate-800 text-base"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-slate-600 mb-1.5">
+            Ödev Açıklaması
+          </label>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="örn. Sayfa 42-43, alıştırma 1-5 arası. Çarşamba gününe kadar."
+            rows={6}
+            autoFocus
+            className="w-full px-4 py-3.5 rounded-2xl border border-slate-200 focus:border-violet-500 focus:ring-2 focus:ring-violet-100 outline-none text-slate-800 text-base leading-relaxed resize-none"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-slate-600 mb-1.5">
+            Teslim Tarihi
+          </label>
+          <input
+            type="date"
+            value={dueDate}
+            onChange={(e) => setDueDate(e.target.value)}
+            className="w-full px-4 py-3 rounded-2xl border border-slate-200 focus:border-violet-500 focus:ring-2 focus:ring-violet-100 outline-none text-slate-800 text-base"
+          />
+        </div>
       </div>
 
       <ActionBar>
         <button
+          onClick={saveOnly}
+          disabled={!title.trim() || !description.trim()}
+          className="flex-1 flex items-center justify-center gap-2 py-4 rounded-2xl bg-emerald-600 text-white font-bold active:scale-[0.98] transition disabled:opacity-40"
+        >
+          <Database size={20} />
+          Ödevi Veritabanına Kaydet
+        </button>
+        <button
           onClick={copy}
-          disabled={!text.trim()}
+          disabled={!title.trim() || !description.trim()}
           className="flex-1 flex items-center justify-center gap-2 py-4 rounded-2xl bg-slate-100 text-slate-700 font-bold active:scale-[0.98] transition disabled:opacity-40"
         >
           <ClipboardCopy size={20} />
@@ -88,7 +171,7 @@ export default function NewHomeworkTab({ selectedClass, addHistory }: Props) {
         </button>
         <button
           onClick={send}
-          disabled={!text.trim()}
+          disabled={!title.trim() || !description.trim()}
           className="flex-[1.6] flex items-center justify-center gap-2 py-4 rounded-2xl bg-[#25D366] text-white font-bold shadow-md active:scale-[0.98] transition disabled:opacity-40 disabled:shadow-none"
         >
           <Send size={20} />

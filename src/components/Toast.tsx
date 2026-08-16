@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Info, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, X } from "lucide-react";
 
-type ToastKind = "success" | "info";
+type ToastKind = "success" | "info" | "error";
 export type Toast = { id: number; message: string; kind: ToastKind };
 
 let listeners: ((t: Toast) => void)[] = [];
@@ -33,11 +33,9 @@ export default function ToastHost() {
           key={t.id}
           className="pointer-events-auto flex items-center gap-2 px-4 py-3 rounded-2xl shadow-lg bg-slate-800 text-white text-sm font-medium animate-slide-down max-w-sm"
         >
-          {t.kind === "success" ? (
-            <CheckCircle2 size={18} className="text-emerald-400 shrink-0" />
-          ) : (
-            <Info size={18} className="text-sky-400 shrink-0" />
-          )}
+          {t.kind === "success" && <CheckCircle2 size={18} className="text-emerald-400 shrink-0" />}
+          {t.kind === "info" && <Info size={18} className="text-sky-400 shrink-0" />}
+          {t.kind === "error" && <AlertTriangle size={18} className="text-red-400 shrink-0" />}
           <span>{t.message}</span>
           <button
             onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
