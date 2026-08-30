@@ -53,6 +53,22 @@ export function buildAttendanceMessage(
   return lines.join("\n");
 }
 
+/**
+ * Devamsız/geç kalan öğrencinin velisine gidecek bildirim metni.
+ * Daha önce AttendanceTab içinde satır içi kuruluyordu; toplu yazma
+ * (batch) veri katmanına taşındığı için buraya alındı.
+ */
+export function buildAttendanceNotificationMessage(
+  studentName: string,
+  className: string,
+  dateISO: string,
+  type: "absent" | "late"
+): string {
+  return type === "absent"
+    ? `${studentName} bugün (${formatDateLongTR(dateISO)}) ${className} dersinde YOK olarak işaretlendi.`
+    : `${studentName} bugün (${formatDateLongTR(dateISO)}) ${className} dersine GEÇ kaldı.`;
+}
+
 export function buildHomeworkCheckMessage(
   className: string,
   dateISO: string,

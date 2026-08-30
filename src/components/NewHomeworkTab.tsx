@@ -10,7 +10,7 @@ import {
   whatsappUrl,
 } from "@/lib/utils";
 import { showToast } from "@/components/Toast";
-import { ActionBar } from "@/components/AttendanceTab";
+import { ActionBar, EmptyHint } from "@/components/TeacherPanelUI";
 import { persistHomework } from "@/lib/firestore";
 import { useAuth } from "@/context/AuthContext";
 
@@ -178,14 +178,6 @@ export default function NewHomeworkTab({ selectedClass, addHistory }: Props) {
           WhatsApp'a Gönder
         </button>
       </ActionBar>
-    </div>
-  );
-}
-
-function EmptyHint({ text }: { text: string }) {
-  return (
-    <div className="px-4 pt-20 text-center text-slate-400">
-      <p>{text}</p>
     </div>
   );
 }

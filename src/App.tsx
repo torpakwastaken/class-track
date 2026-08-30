@@ -22,7 +22,8 @@ import AttendanceTab from "@/components/AttendanceTab";
 import HomeworkCheckTab from "@/components/HomeworkCheckTab";
 import NewHomeworkTab from "@/components/NewHomeworkTab";
 import HistoryTab from "@/components/HistoryTab";
-import ToastHost from "@/components/Toast";
+// ToastHost artık main.tsx içinde, uygulamanın kökünde render ediliyor
+// (tüm rollerde görünsün diye). Burada yalnızca showToast kullanılır.
 import { showToast } from "@/components/Toast";
 
 // 🔐 "Yönetim" sekmesi YALNIZCA ana yöneticiye (Admin) gösterilir.
@@ -84,8 +85,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <ToastHost />
-
       {/* Top bar */}
       <header className="sticky top-0 z-40 bg-white/90 backdrop-blur border-b border-slate-100">
         <div className="mx-auto max-w-md px-4 py-3 flex items-center gap-3 justify-between">

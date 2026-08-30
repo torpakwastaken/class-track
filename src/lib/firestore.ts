@@ -11,7 +11,9 @@ import {
   updateDoc,
   deleteDoc,
   onSnapshot,
+  writeBatch,
   Timestamp,
+  type DocumentReference,
 } from "firebase/firestore";
 import type {
   SchoolClass,
@@ -21,6 +23,61 @@ import type {
   HomeworkCheckStatus,
   HomeworkCheckRecord,
 } from "@/types";
+import { buildAttendanceNotificationMessage } from "@/lib/utils";
+
+/* ─── Toplu yazma (batched writes) altyapısı ─────────────────────────── */
+// Öğretmen paneli 20-30 öğrencilik bir sınıfı tek dokunuşla kaydediyor.
+// Döngü içinde `await addDoc(...)` her öğrenci için ayrı bir gidiş-dönüş
+// demek (30 öğrenci = 30+ round-trip, ~5 saniye). `writeBatch` ile hepsi
+// TEK gidiş-dönüşte ve atomik olarak yazılır.
+
+// Firestore tek batch'te en fazla 500 işlem kabul eder. 400 ile güvenlik
+// payı bırakıp daha kalabalık sınıflarda otomatik parçalıyoruz.
+const BATCH_LIMIT = 400;
+
+type BatchOp = {
+  ref: DocumentReference;
+  data: Record<string, unknown>;
+  /** true ise mevcut alanlar korunur (örn. bildirimin `read` durumu). */
+  merge: boolean;
+};
+
+/** Doküman ID'sinde "/" kullanılamaz; deterministik ID'leri güvenli hale getirir. */
+const safeId = (value: string) => value.replace(/\//g, "-");
+
+/**
+ * Deterministik yoklama doküman ID'si: aynı sınıf + gün + öğrenci için
+ * HER ZAMAN aynı dokümanı hedefler. Böylece öğretmen "Kaydet", "Kopyala"
+ * ve "WhatsApp" butonlarına sırayla bassa bile mükerrer kayıt oluşmaz —
+ * üzerine yazılır. (Eskiden `addDoc` ile her basışta yeni satır açılıyordu.)
+ */
+export const attendanceDocId = (classId: string, date: string, studentId: string) =>
+  safeId(`${classId}_${date}_${studentId}`);
+
+/** Deterministik bildirim ID'si. classId dahil: aynı öğrenci iki sınıfta olabilir. */
+export const notificationDocId = (
+  classId: string,
+  studentId: string,
+  date: string,
+  type: "absent" | "late"
+) => safeId(`${classId}_${studentId}_${date}_${type}`);
+
+/** Deterministik ödev kontrolü ID'si. */
+export const homeworkCheckDocId = (homeworkId: string, studentId: string, date: string) =>
+  safeId(`${homeworkId}_${studentId}_${date}`);
+
+/** İşlem listesini 400'lük parçalara bölerek commit eder. */
+async function commitOps(ops: BatchOp[]): Promise<void> {
+  for (let i = 0; i < ops.length; i += BATCH_LIMIT) {
+    const chunk = ops.slice(i, i + BATCH_LIMIT);
+    const batch = writeBatch(db);
+    for (const op of chunk) {
+      if (op.merge) batch.set(op.ref, op.data, { merge: true });
+      else batch.set(op.ref, op.data);
+    }
+    await batch.commit();
+  }
+}
 
 /* ─── Users ─────────────────────────────────────────────────────────── */
 
@@ -224,6 +281,124 @@ export const getAttendanceByParentUid = async (parentUid: string) => {
   return results.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
 };
 
+export type AttendanceBatchRecord = {
+  classId: string;
+  className: string;
+  date: string;
+  studentId: string;
+  studentName: string;
+  status: AttendanceStatus;
+  teacherUid: string;
+  /** Öğrencinin velisi eşleştirilmişse, devamsız/geç durumunda bildirim yazılır. */
+  parentUid?: string | null;
+};
+
+/**
+ * Bir sınıfın TÜM yoklamasını + devamsız/geç velilerine gidecek bildirimleri
+ * tek `writeBatch` içinde yazar.
+ *
+ * Eski `addAttendanceRecord` döngüsüne göre iki kazanç:
+ *   1. Hız: 30 öğrenci için 30+ gidiş-dönüş yerine 1 sorgu + 1 batch.
+ *   2. Doğruluk: deterministik doküman ID'leri sayesinde aynı gün tekrar
+ *      kaydetmek mükerrer satır değil, üzerine yazma üretir.
+ *
+ * Bildirimlerde `read` alanı yalnızca doküman YENİ oluşturulurken false
+ * yazılır; velinin okuduğu bir bildirim, öğretmen yoklamayı tekrar
+ * kaydettiğinde yeniden "okunmadı" durumuna DÜŞMEZ. Bunun için mevcut
+ * bildirim ID'leri tek bir sorguyla önden okunur.
+ */
+export const persistAttendanceBatch = async (
+  records: AttendanceBatchRecord[]
+): Promise<{ written: number; notified: number }> => {
+  if (records.length === 0) return { written: 0, notified: 0 };
+
+  const date = records[0].date;
+  const now = new Date().toISOString();
+
+  // Bildirim yazılacak öğrenciler (devamsız/geç + velisi eşleştirilmiş).
+  const notifiable = records.filter(
+    (r) => (r.status === "absent" || r.status === "late") && r.parentUid
+  );
+
+  // Hangi dokümanlar zaten var? Deterministik ID kullandığımız için ilgili
+  // güne ait kayıtları çekip ID setine bakmak yeterli. `createdAt` ve
+  // bildirimin `read` alanı yalnızca YENİ dokümanlarda yazılır.
+  // İki sorgu paralel çalışır (toplam: 2 sorgu + 1 batch).
+  const [existingAttendanceIds, existingNotificationIds] = await Promise.all([
+    getDocs(
+      query(
+        collection(db, "attendance"),
+        where("classId", "==", records[0].classId),
+        where("date", "==", date)
+      )
+    )
+      .then((snap) => new Set(snap.docs.map((d) => d.id)))
+      .catch((e) => {
+        console.error("Mevcut yoklama kayıtları okunamadı:", e);
+        return new Set<string>();
+      }),
+    notifiable.length === 0
+      ? Promise.resolve(new Set<string>())
+      : getDocs(query(collection(db, "notifications"), where("date", "==", date)))
+          .then((snap) => new Set(snap.docs.map((d) => d.id)))
+          .catch((e) => {
+            // Sorgu başarısız olsa bile yoklama kaydını bloke etmeyiz; en kötü
+            // senaryoda bildirim yeniden "okunmadı" durumuna döner.
+            console.error("Mevcut bildirimler okunamadı:", e);
+            return new Set<string>();
+          }),
+  ]);
+
+  const ops: BatchOp[] = [];
+
+  for (const rec of records) {
+    const id = attendanceDocId(rec.classId, rec.date, rec.studentId);
+    const data: Record<string, unknown> = {
+      classId: rec.classId,
+      className: rec.className,
+      date: rec.date,
+      studentId: rec.studentId,
+      studentName: rec.studentName,
+      status: rec.status,
+      teacherUid: rec.teacherUid,
+      updatedAt: now,
+    };
+    // İlk kaydın oluşturulma zamanı korunur; güncellemede ezilmez.
+    if (!existingAttendanceIds.has(id)) data.createdAt = now;
+    ops.push({ ref: doc(db, "attendance", id), data, merge: true });
+  }
+
+  for (const rec of notifiable) {
+    const id = notificationDocId(rec.classId, rec.studentId, rec.date, rec.status as "absent" | "late");
+    const isNew = !existingNotificationIds.has(id);
+    const data: Record<string, unknown> = {
+      parentUid: rec.parentUid,
+      classId: rec.classId,
+      studentId: rec.studentId,
+      studentName: rec.studentName,
+      className: rec.className,
+      date: rec.date,
+      type: rec.status,
+      message: buildAttendanceNotificationMessage(
+        rec.studentName,
+        rec.className,
+        rec.date,
+        rec.status as "absent" | "late"
+      ),
+      updatedAt: now,
+    };
+    // `read` ve `createdAt` yalnızca yeni bildirimde yazılır.
+    if (isNew) {
+      data.read = false;
+      data.createdAt = now;
+    }
+    ops.push({ ref: doc(db, "notifications", id), data, merge: true });
+  }
+
+  await commitOps(ops);
+  return { written: records.length, notified: notifiable.length };
+};
+
 /* ─── Homework ──────────────────────────────────────────────────────── */
 
 /**
@@ -415,6 +590,81 @@ export const persistHomeworkChecks = async (
   }
 
   return saved;
+};
+
+export type HomeworkCheckBatchRecord = {
+  classId: string;
+  className: string;
+  homeworkId: string;
+  homeworkTitle?: string;
+  date: string;
+  studentId: string;
+  studentName: string;
+  status: HomeworkCheckStatus;
+  teacherUid: string;
+};
+
+/**
+ * Ödev kontrol sonuçlarını tek `writeBatch` içinde yazar.
+ *
+ * `persistHomeworkChecks` her öğrenci için AYRI bir `getDocs` + yazma
+ * yapıyordu (30 öğrenci = 60 ardışık gidiş-dönüş). Burada ödev başına
+ * TEK sorgu ile mevcut kayıtlar bulunur, ardından tüm yazmalar tek
+ * batch'te gider: 1 sorgu + 1 batch.
+ *
+ * Geriye dönük uyumluluk: eski `addDoc` ile rastgele ID almış kayıtlar
+ * varsa onların ID'leri kullanılır (yeni deterministik ID ile ikinci bir
+ * kopya oluşmasın). Yeni kayıtlar `homeworkId_studentId_date` ID'sini alır.
+ */
+export const persistHomeworkChecksBatch = async (
+  records: HomeworkCheckBatchRecord[]
+): Promise<{ written: number }> => {
+  if (records.length === 0) return { written: 0 };
+
+  const now = new Date().toISOString();
+  const homeworkIds = Array.from(new Set(records.map((r) => r.homeworkId)));
+
+  // Ödev başına tek sorgu: (studentId + date) → mevcut doküman ID'si.
+  const existingByKey = new Map<string, string>();
+  await Promise.all(
+    homeworkIds.map(async (homeworkId) => {
+      try {
+        const snap = await getDocs(
+          query(collection(db, "homework_checks"), where("homeworkId", "==", homeworkId))
+        );
+        for (const d of snap.docs) {
+          const data = d.data() as { studentId?: string; date?: string };
+          existingByKey.set(`${homeworkId}_${data.studentId ?? ""}_${data.date ?? ""}`, d.id);
+        }
+      } catch (e) {
+        console.error("Mevcut ödev kontrol kayıtları okunamadı:", e);
+      }
+    })
+  );
+
+  const ops: BatchOp[] = [];
+  for (const rec of records) {
+    const key = `${rec.homeworkId}_${rec.studentId}_${rec.date}`;
+    const existingId = existingByKey.get(key);
+    const id = existingId ?? homeworkCheckDocId(rec.homeworkId, rec.studentId, rec.date);
+    const data: Record<string, unknown> = {
+      classId: rec.classId,
+      className: rec.className,
+      homeworkId: rec.homeworkId,
+      homeworkTitle: rec.homeworkTitle ?? "",
+      date: rec.date,
+      studentId: rec.studentId,
+      studentName: rec.studentName,
+      status: rec.status,
+      teacherUid: rec.teacherUid,
+      updatedAt: now,
+    };
+    if (!existingId) data.createdAt = now;
+    ops.push({ ref: doc(db, "homework_checks", id), data, merge: true });
+  }
+
+  await commitOps(ops);
+  return { written: records.length };
 };
 
 /**
